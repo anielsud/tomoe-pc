@@ -60,7 +60,7 @@ func TestTrackerThreshold(t *testing.T) {
 	emb2 := []float32{0.95, 0.3, 0}
 
 	tracker.Assign(emb1, 2*time.Second)
-	clock.advance(stickyGraceWindow + time.Second)
+	clock.advance(DefaultTuning().StickyGraceWindow + time.Second)
 	label2, _ := tracker.Assign(emb2, 2*time.Second)
 
 	if label2 != "Person 2" {
@@ -102,13 +102,13 @@ func TestTrackerEmptyEmbedding(t *testing.T) {
 func TestTrackerDefaultThreshold(t *testing.T) {
 	// Invalid thresholds should use default
 	tracker := NewTracker(0)
-	if tracker.threshold != DefaultThreshold {
-		t.Errorf("threshold = %v, want %v", tracker.threshold, DefaultThreshold)
+	if got := tracker.Tuning().Threshold; got != DefaultThreshold {
+		t.Errorf("threshold = %v, want %v", got, DefaultThreshold)
 	}
 
 	tracker = NewTracker(-1)
-	if tracker.threshold != DefaultThreshold {
-		t.Errorf("threshold = %v, want %v", tracker.threshold, DefaultThreshold)
+	if got := tracker.Tuning().Threshold; got != DefaultThreshold {
+		t.Errorf("threshold = %v, want %v", got, DefaultThreshold)
 	}
 }
 
@@ -286,7 +286,7 @@ func TestTrackerStickySpeaker_DoesNotApplyPastGraceWindow(t *testing.T) {
 
 	tracker.Assign([]float32{1, 0, 0, 0}, 2*time.Second) // Person 1
 
-	clock.advance(stickyGraceWindow + time.Second)
+	clock.advance(DefaultTuning().StickyGraceWindow + time.Second)
 	near := []float32{0.7, 0.7141428, 0, 0}
 	label2, _ := tracker.Assign(near, 2*time.Second)
 	if label2 != "Person 2" {
@@ -361,7 +361,7 @@ func TestTrackerShortSegment_DoesNotApplyPastGraceWindow(t *testing.T) {
 
 	tracker.Assign([]float32{1, 0, 0, 0}, 2*time.Second) // Person 1
 
-	clock.advance(shortSegmentGraceWindow + time.Second)
+	clock.advance(DefaultTuning().ShortSegmentGraceWindow + time.Second)
 	label, _ := tracker.Assign([]float32{0, 0, 1, 0}, 300*time.Millisecond)
 	if label != "Person 2" {
 		t.Errorf("short segment far past the grace window label = %q, want %q (new speaker)", label, "Person 2")
@@ -413,9 +413,130 @@ func TestTrackerShortSegment_AtMinDurationBehavesAsNormal(t *testing.T) {
 	// Exactly at minAssignDuration (not below it) — the fallback must
 	// NOT apply; a poor match at this duration is a real new speaker.
 	clock.advance(time.Second)
-	label, _ := tracker.Assign([]float32{0, 0, 1, 0}, minAssignDuration)
+	label, _ := tracker.Assign([]float32{0, 0, 1, 0}, DefaultTuning().MinAssignDuration)
 	if label != "Person 2" {
 		t.Errorf("poor match exactly at minAssignDuration label = %q, want %q (new speaker)", label, "Person 2")
+	}
+}
+
+func TestTrackerSetHintForRecent_MergesClustersOnMatchingHint(t *testing.T) {
+	tracker := NewTracker(0.8)
+	clock := &fakeClock{t: time.Now()}
+	tracker.nowFn = clock.now
+
+	tracker.Assign([]float32{1, 0, 0, 0}, 2*time.Second) // Person 1
+	tracker.SetHintForRecent("Christian Stanton", time.Minute)
+
+	clock.advance(time.Second)
+	tracker.Assign([]float32{0, 1, 0, 0}, 2*time.Second) // Person 2, a distinct-sounding embedding
+	if tracker.NumSpeakers() != 2 {
+		t.Fatalf("NumSpeakers() = %d, want 2 before the matching hint lands", tracker.NumSpeakers())
+	}
+
+	// A video hint resolves Person 2 to the SAME real name already
+	// attached to Person 1 -- independent evidence they're one person,
+	// even though their embeddings didn't cluster together.
+	clock.advance(time.Second)
+	if ok := tracker.SetHintForRecent("Christian Stanton", time.Minute); !ok {
+		t.Fatal("SetHintForRecent() = false, want true")
+	}
+
+	if got := tracker.NumSpeakers(); got != 1 {
+		t.Errorf("NumSpeakers() = %d, want 1 after merge", got)
+	}
+
+	// A fresh embedding matching either original centroid should now
+	// resolve to the SAME merged identity.
+	clock.advance(time.Second)
+	label, _ := tracker.Assign([]float32{0, 0.99, 0.01, 0}, 2*time.Second)
+	if label != "Person 1 (Christian Stanton)" {
+		t.Errorf("label after merge = %q, want %q", label, "Person 1 (Christian Stanton)")
+	}
+}
+
+func TestTrackerSetHintForRecent_MergeKeepsMoreCompleteName(t *testing.T) {
+	tracker := NewTracker(0.8)
+	clock := &fakeClock{t: time.Now()}
+	tracker.nowFn = clock.now
+
+	tracker.Assign([]float32{1, 0, 0, 0}, 2*time.Second) // Person 1
+	tracker.SetHintForRecent("Christian Rame…", time.Minute)
+
+	clock.advance(time.Second)
+	tracker.Assign([]float32{0, 1, 0, 0}, 2*time.Second) // Person 2
+
+	clock.advance(time.Second)
+	tracker.SetHintForRecent("Christian Ramezani", time.Minute)
+
+	clock.advance(time.Second)
+	label, _ := tracker.Assign([]float32{1, 0, 0, 0}, 2*time.Second)
+	if label != "Person 1 (Christian Ramezani)" {
+		t.Errorf("label after merge = %q, want the fuller name kept", label)
+	}
+}
+
+func TestTrackerSetHintForRecent_DoesNotMergeUnrelatedNames(t *testing.T) {
+	tracker := NewTracker(0.8)
+	clock := &fakeClock{t: time.Now()}
+	tracker.nowFn = clock.now
+
+	tracker.Assign([]float32{1, 0, 0, 0}, 2*time.Second) // Person 1
+	tracker.SetHintForRecent("Christian Stanton", time.Minute)
+
+	clock.advance(time.Second)
+	tracker.Assign([]float32{0, 1, 0, 0}, 2*time.Second) // Person 2
+
+	clock.advance(time.Second)
+	tracker.SetHintForRecent("Jessica Dannemann", time.Minute)
+
+	if got := tracker.NumSpeakers(); got != 2 {
+		t.Errorf("NumSpeakers() = %d, want 2 (unrelated names must not merge)", got)
+	}
+}
+
+func TestTrackerSetHintForRecent_DoesNotMergeOnAmbiguousShortFragment(t *testing.T) {
+	tracker := NewTracker(0.8)
+	clock := &fakeClock{t: time.Now()}
+	tracker.nowFn = clock.now
+
+	tracker.Assign([]float32{1, 0, 0, 0}, 2*time.Second) // Person 1
+	tracker.SetHintForRecent("Ann", time.Minute)
+
+	clock.advance(time.Second)
+	tracker.Assign([]float32{0, 1, 0, 0}, 2*time.Second) // Person 2
+
+	clock.advance(time.Second)
+	// "Ann" is too short/ambiguous a fragment to safely merge on, even
+	// though it IS technically a prefix of "Annika".
+	tracker.SetHintForRecent("Annika", time.Minute)
+
+	if got := tracker.NumSpeakers(); got != 2 {
+		t.Errorf("NumSpeakers() = %d, want 2 (short ambiguous fragment must not trigger a merge)", got)
+	}
+}
+
+func TestTrackerSetHintForRecent_MergeDoesNotRenumberUnrelatedClusters(t *testing.T) {
+	tracker := NewTracker(0.8)
+	clock := &fakeClock{t: time.Now()}
+	tracker.nowFn = clock.now
+
+	tracker.Assign([]float32{1, 0, 0, 0}, 2*time.Second) // Person 1
+	tracker.SetHintForRecent("Christian Stanton", time.Minute)
+
+	clock.advance(time.Second)
+	tracker.Assign([]float32{0, 1, 0, 0}, 2*time.Second) // Person 2
+
+	clock.advance(time.Second)
+	tracker.Assign([]float32{0, 0, 1, 0}, 2*time.Second) // Person 3, unrelated to the merge below
+
+	clock.advance(time.Second)
+	tracker.Assign([]float32{0, 1, 0, 0}, 2*time.Second)       // re-select Person 2 as most recent
+	tracker.SetHintForRecent("Christian Stanton", time.Minute) // merges Person 2 into Person 1
+
+	clock.advance(time.Second)
+	label, _ := tracker.Assign([]float32{0, 0, 0.99, 0.01}, 2*time.Second)
+	if label != "Person 3" {
+		t.Errorf("label = %q, want %q (merging 1&2 must not renumber Person 3)", label, "Person 3")
 	}
 }
 

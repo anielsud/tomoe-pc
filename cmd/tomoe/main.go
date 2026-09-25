@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -135,8 +136,31 @@ func runStart(cmd *cobra.Command, args []string) error {
 			if cfg.Meeting.SpeakerThreshold > 0 {
 				threshold = cfg.Meeting.SpeakerThreshold
 			}
-			opts.Tracker = speaker.NewTracker(threshold)
+			tracker := speaker.NewTracker(threshold)
+			tracker.SetTuning(speaker.TuningFromSeconds(
+				cfg.Meeting.SpeakerThreshold,
+				cfg.Meeting.StickyGraceWindow,
+				cfg.Meeting.StickyThresholdMargin,
+				cfg.Meeting.MinAssignDuration,
+				cfg.Meeting.ShortSegmentGraceWindow,
+			))
+			opts.Tracker = tracker
 			defer emb.Close()
+
+			// Watch config.toml so clustering tuning can be retuned
+			// live -- no rebuild, no relaunch. See MeetingConfig's doc
+			// comment for why this exists.
+			stopConfigWatch := config.Watch(config.Path(), 2*time.Second, func(newCfg *config.Config) {
+				tracker.SetTuning(speaker.TuningFromSeconds(
+					newCfg.Meeting.SpeakerThreshold,
+					newCfg.Meeting.StickyGraceWindow,
+					newCfg.Meeting.StickyThresholdMargin,
+					newCfg.Meeting.MinAssignDuration,
+					newCfg.Meeting.ShortSegmentGraceWindow,
+				))
+				fmt.Printf("config: reloaded speaker clustering tuning: %+v\n", tracker.Tuning())
+			})
+			defer stopConfigWatch()
 		}
 	}
 

@@ -4,7 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -38,8 +40,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Meeting.DefaultSources != "both" {
 		t.Errorf("Meeting.DefaultSources = %q, want %q", cfg.Meeting.DefaultSources, "both")
 	}
-	if cfg.Meeting.SpeakerThreshold != 0.65 {
-		t.Errorf("Meeting.SpeakerThreshold = %v, want 0.65", cfg.Meeting.SpeakerThreshold)
+	if cfg.Meeting.SpeakerThreshold != 0.55 {
+		t.Errorf("Meeting.SpeakerThreshold = %v, want 0.55", cfg.Meeting.SpeakerThreshold)
 	}
 	if !cfg.Meeting.AutoSave {
 		t.Error("Meeting.AutoSave = false, want true")
@@ -222,8 +224,8 @@ clipboard = true
 	if cfg.Meeting.DefaultSources != "both" {
 		t.Errorf("Meeting.DefaultSources = %q, want %q (default)", cfg.Meeting.DefaultSources, "both")
 	}
-	if cfg.Meeting.SpeakerThreshold != 0.65 {
-		t.Errorf("Meeting.SpeakerThreshold = %v, want 0.65 (default)", cfg.Meeting.SpeakerThreshold)
+	if cfg.Meeting.SpeakerThreshold != 0.55 {
+		t.Errorf("Meeting.SpeakerThreshold = %v, want 0.55 (default)", cfg.Meeting.SpeakerThreshold)
 	}
 	if !cfg.Meeting.AutoDetect {
 		t.Error("Meeting.AutoDetect = false, want true (default)")
@@ -366,5 +368,88 @@ func TestExistsWhenFilePresent(t *testing.T) {
 
 	if !Exists() {
 		t.Error("Exists() = false after config file is created")
+	}
+}
+
+func TestWatch_DetectsChangeAndReloads(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	cfg := DefaultConfig()
+	cfg.Meeting.SpeakerThreshold = 0.55
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	got := make(chan *Config, 1)
+	stop := Watch(path, 20*time.Millisecond, func(c *Config) {
+		got <- c
+	})
+	defer stop()
+
+	// Must not fire for the file's state as of when Watch started.
+	select {
+	case <-got:
+		t.Fatal("onChange fired before any real change was made")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Sleep first so the rewritten file gets a strictly later mtime
+	// even on filesystems with coarse mtime resolution.
+	time.Sleep(20 * time.Millisecond)
+	cfg.Meeting.SpeakerThreshold = 0.60
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	select {
+	case newCfg := <-got:
+		if newCfg.Meeting.SpeakerThreshold != 0.60 {
+			t.Errorf("reloaded SpeakerThreshold = %v, want 0.60", newCfg.Meeting.SpeakerThreshold)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("onChange never fired after a real file change")
+	}
+}
+
+func TestWatch_StopStopsFurtherReloads(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	cfg := DefaultConfig()
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	var count int32
+	stop := Watch(path, 10*time.Millisecond, func(c *Config) {
+		atomic.AddInt32(&count, 1)
+	})
+	stop()
+
+	time.Sleep(20 * time.Millisecond)
+	cfg.Meeting.SpeakerThreshold = 0.9
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	if got := atomic.LoadInt32(&count); got != 0 {
+		t.Errorf("onChange fired %d times after stop(), want 0", got)
+	}
+}
+
+func TestWatch_MissingFileNeverFires(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "does-not-exist.toml")
+
+	var count int32
+	stop := Watch(path, 10*time.Millisecond, func(c *Config) {
+		atomic.AddInt32(&count, 1)
+	})
+	defer stop()
+
+	time.Sleep(100 * time.Millisecond)
+	if got := atomic.LoadInt32(&count); got != 0 {
+		t.Errorf("onChange fired %d times for a nonexistent file, want 0", got)
 	}
 }

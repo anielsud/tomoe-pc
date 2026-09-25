@@ -55,6 +55,11 @@ type App struct {
 	currentSess     *session.Session
 	videoHintCancel context.CancelFunc
 
+	// configWatchStop stops the config.toml hot-reload watcher started
+	// in Startup (see speaker.Tracker.SetTuning) once the app shuts
+	// down. nil if no tracker/embedder was created.
+	configWatchStop func()
+
 	// videoHintMu guards videoHintActivity, a short ring buffer of the
 	// current session's videohint.Event trace — separate from mu since
 	// emitVideoHintEvents runs concurrently with the rest of the session
@@ -170,6 +175,27 @@ func (a *App) Startup(ctx context.Context) {
 				threshold = cfg.Meeting.SpeakerThreshold
 			}
 			a.tracker = speaker.NewTracker(threshold)
+			a.tracker.SetTuning(speaker.TuningFromSeconds(
+				cfg.Meeting.SpeakerThreshold,
+				cfg.Meeting.StickyGraceWindow,
+				cfg.Meeting.StickyThresholdMargin,
+				cfg.Meeting.MinAssignDuration,
+				cfg.Meeting.ShortSegmentGraceWindow,
+			))
+
+			// Watch config.toml so clustering tuning can be retuned
+			// live -- no rebuild, no relaunch. See MeetingConfig's doc
+			// comment for why this exists.
+			a.configWatchStop = config.Watch(config.Path(), 2*time.Second, func(newCfg *config.Config) {
+				a.tracker.SetTuning(speaker.TuningFromSeconds(
+					newCfg.Meeting.SpeakerThreshold,
+					newCfg.Meeting.StickyGraceWindow,
+					newCfg.Meeting.StickyThresholdMargin,
+					newCfg.Meeting.MinAssignDuration,
+					newCfg.Meeting.ShortSegmentGraceWindow,
+				))
+				fmt.Printf("config: reloaded speaker clustering tuning: %+v\n", a.tracker.Tuning())
+			})
 		}
 	}
 
@@ -195,6 +221,10 @@ func (a *App) Startup(ctx context.Context) {
 // Shutdown is called by Wails when the application is closing.
 func (a *App) Shutdown(ctx context.Context) {
 	StopTray()
+
+	if a.configWatchStop != nil {
+		a.configWatchStop()
+	}
 
 	// Snapshot mutable fields under lock before acting on them.
 	a.mu.Lock()
