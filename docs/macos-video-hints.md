@@ -230,6 +230,20 @@ a truncation relationship with the shorter name at least 4 characters,
 so a bare ambiguous fragment (a first initial, "Mr") can never trigger
 a merge.
 
+**Short-segment fallback blindly overriding a better-matching known
+speaker, found live mid-call.** A quick back-and-forth between two
+already-distinguished speakers relabeled the second speaker's own
+short replies as the first speaker's — visibly wrong, not just an
+unlabeled-cluster edge case. Root cause: the short-segment fallback
+(added earlier for filler-word fragmentation) defaulted to "whoever
+was just assigned" purely because a segment was short and recent,
+without ever checking whether the audio was actually a much better
+match for some OTHER already-known speaker's centroid. Fixed: if the
+raw best-matching centroid points at a different speaker and clears
+the same relaxed floor the sticky check already trusts
+(`Threshold-StickyThresholdMargin`), that speaker wins instead of
+blind recency.
+
 ## Polling (`poller_darwin.go`)
 
 Runs on a fixed ticker *and* an immediate trigger:
@@ -247,6 +261,15 @@ read fresh each time a meeting session starts — unlike
 need no rebuild or relaunch: a new session picks up an edited config
 immediately.
 
+**Double-shot on a brand-new speaker.** `HintNeeded()`'s channel
+carries a priority bool, not just a bare signal: a brand-new speaker
+(detected via `NumSpeakers()` before/after `Assign`, not a change to
+`Assign`'s own return signature) fires twice — immediately, and again
+~500ms later in case the ring/label hadn't rendered on the first
+attempt — both bypassing `triggerDebounce` entirely, since a new
+identity is rarer and more valuable to resolve fast than an ordinary
+still-unlabeled retry.
+
 Every stage reached each tick is reported on an `events` channel
 (window found/not, frame captured, not-a-call, ring matched/not, OCR
 hit/miss, escalated) — non-blocking, so a slow/absent consumer never
@@ -254,6 +277,39 @@ stalls polling. `internal/daemon` logs every stage; `internal/backend`
 additionally buffers a short ring (`GetVideoHintActivity`) and forwards
 each one live via a `"videohint:activity"` Wails event to a frontend
 ticker.
+
+## Diagnostics pane (frontend `DiagnosticsPane.tsx`)
+
+A real-time, separate view into *how* each transcript line got its
+speaker label — deliberately its own tab, not folded into
+`TranscriptPane`, so the normal transcript stays exactly as clean as
+it looks today; this is a tuning tool, not something an end user needs
+to see. Built on the exact same `transcript:segment`/
+`transcript:segment:update` Wails events `TranscriptPane` already
+consumes — no separate backend event stream to keep in sync — plus one
+new field on `session.Segment`: `Decision` (`speaker.AssignDecision`
+as a plain string, kept string-typed there specifically so
+`internal/session` doesn't need to depend on `internal/speaker`),
+exposed via a new `speaker.Tracker.LastDecision()` getter rather than
+changing `Assign`'s own return signature (which many existing
+callers/tests already use).
+
+The speaker label itself already carries everything the view needs:
+`Tracker.label()` embeds a resolved hint in parens (`"Person 1
+(Kevin)"`), so `DiagnosticsPane` parses that back out and combines it
+with `Decision` to render `"Kevin [Person 1, OCR]"` (a hint exists, but
+this segment's own decision wasn't a fresh confident match) or `"Kevin
+[Person 1, OCR+Centroid match]"` (this segment's audio independently
+re-confirmed the same identity this instant) — no cross-referencing
+the video-hint event stream needed.
+
+**Known limitation, not fixed here:** a video hint only labels
+segments emitted *after* it lands (see this doc's "Speaker-tracker
+wiring" section above) — already-sent segments for that speaker are
+never retroactively relabeled. So in practice a line's tag jumps
+straight from plain `"Person N"` to `"Name [Person N, OCR]"` on a
+*later* line, rather than the same line visibly upgrading through
+every stage in place.
 
 ## Still open
 

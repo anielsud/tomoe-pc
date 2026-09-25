@@ -11,6 +11,7 @@ import (
 	"github.com/sosuke-ai/tomoe-pc/internal/audio"
 	"github.com/sosuke-ai/tomoe-pc/internal/session"
 	"github.com/sosuke-ai/tomoe-pc/internal/sigfix"
+	"github.com/sosuke-ai/tomoe-pc/internal/speaker"
 	"github.com/sosuke-ai/tomoe-pc/internal/transcribe"
 )
 
@@ -35,6 +36,7 @@ type refinementJob struct {
 	id        string
 	samples   []float32
 	speaker   string
+	decision  speaker.AssignDecision
 	startTime float64
 	endTime   float64
 	source    SourceType
@@ -50,6 +52,7 @@ type liveState struct {
 	partial   string
 	id        string
 	speaker   string
+	decision  speaker.AssignDecision
 	startTime float64
 	audio     []float32
 }
@@ -168,7 +171,7 @@ func (c *Coordinator) emitLivePartial(source SourceType, live *liveState, text s
 			return
 		}
 		live.id = c.nextSegID()
-		live.speaker = c.assignSpeaker(source, live.audio)
+		live.speaker, live.decision = c.assignSpeaker(source, live.audio)
 		live.startTime = c.elapsed()
 
 		seg := session.Segment{
@@ -180,6 +183,7 @@ func (c *Coordinator) emitLivePartial(source SourceType, live *liveState, text s
 			Source:    string(source),
 			Language:  "en", // the streaming engine is English-only today
 			Status:    "live",
+			Decision:  string(live.decision),
 		}
 		select {
 		case c.segmentCh <- seg:
@@ -197,6 +201,7 @@ func (c *Coordinator) emitLivePartial(source SourceType, live *liveState, text s
 		Source:    string(source),
 		Language:  "en",
 		Status:    "live",
+		Decision:  string(live.decision),
 	}
 	select {
 	case c.segmentUpdateCh <- seg:
@@ -244,10 +249,11 @@ func (c *Coordinator) drainVAD(vad *sherpa.VoiceActivityDetector, source SourceT
 			// as before live partials existed.
 			id := live.id
 			spk := live.speaker
+			decision := live.decision
 			wasLive := id != ""
 			if !wasLive {
 				id = c.nextSegID()
-				spk = c.assignSpeaker(source, samples)
+				spk, decision = c.assignSpeaker(source, samples)
 			}
 
 			seg := session.Segment{
@@ -259,6 +265,7 @@ func (c *Coordinator) drainVAD(vad *sherpa.VoiceActivityDetector, source SourceT
 				Source:    string(source),
 				Language:  "en",
 				Status:    "pending",
+				Decision:  string(decision),
 			}
 			if wasLive {
 				select {
@@ -274,7 +281,7 @@ func (c *Coordinator) drainVAD(vad *sherpa.VoiceActivityDetector, source SourceT
 
 			select {
 			case c.refineCh <- refinementJob{
-				id: id, samples: samples, speaker: spk,
+				id: id, samples: samples, speaker: spk, decision: decision,
 				startTime: startTime, endTime: endTime, source: source,
 				pass1Text: text,
 			}:
@@ -287,7 +294,7 @@ func (c *Coordinator) drainVAD(vad *sherpa.VoiceActivityDetector, source SourceT
 		} else {
 			// Single-pass (no streaming engine configured): unchanged
 			// from before this feature existed.
-			spk := c.assignSpeaker(source, samples)
+			spk, decision := c.assignSpeaker(source, samples)
 
 			c.transcribeMu.Lock()
 			result, err := c.cfg.Engine.TranscribeDirect(samples)
@@ -305,6 +312,7 @@ func (c *Coordinator) drainVAD(vad *sherpa.VoiceActivityDetector, source SourceT
 				EndTime:   endTime,
 				Source:    string(source),
 				Language:  result.Language,
+				Decision:  string(decision),
 			}
 			select {
 			case c.segmentCh <- seg:
@@ -353,6 +361,7 @@ func (c *Coordinator) refineWorker() {
 			EndTime:   job.endTime,
 			Source:    string(job.source),
 			Language:  lang,
+			Decision:  string(job.decision),
 		}
 		select {
 		case c.segmentUpdateCh <- seg:
@@ -361,14 +370,19 @@ func (c *Coordinator) refineWorker() {
 	}
 }
 
-// assignSpeaker determines the speaker label for a segment.
-func (c *Coordinator) assignSpeaker(source SourceType, samples []float32) string {
+// assignSpeaker determines the speaker label for a segment, plus which
+// Tracker.Assign rule produced it (empty for mic/system-audio, which
+// never go through audio clustering at all) -- see
+// speaker.AssignDecision. Diagnostic metadata only, carried onto
+// session.Segment.Decision for a diagnostics view; never affects the
+// label itself.
+func (c *Coordinator) assignSpeaker(source SourceType, samples []float32) (string, speaker.AssignDecision) {
 	if source == SourceMic {
-		return "You"
+		return "You", ""
 	}
 
 	if c.cfg.SkipMonitorDiarization {
-		return "System Audio"
+		return "System Audio", ""
 	}
 
 	// For monitor source, try speaker embedding + clustering
@@ -378,6 +392,7 @@ func (c *Coordinator) assignSpeaker(source SourceType, samples []float32) string
 			duration := time.Duration(float64(len(samples)) / vadSampleRate * float64(time.Second))
 			before := c.cfg.Tracker.NumSpeakers()
 			label, needsHint := c.cfg.Tracker.Assign(embedding, duration)
+			decision := c.cfg.Tracker.LastDecision()
 			isNew := c.cfg.Tracker.NumSpeakers() > before
 
 			if isNew {
@@ -401,9 +416,9 @@ func (c *Coordinator) assignSpeaker(source SourceType, samples []float32) string
 				// waiting for a slow/absent consumer.
 				c.signalHintNeeded(false)
 			}
-			return label
+			return label, decision
 		}
 	}
 
-	return "Other"
+	return "Other", ""
 }

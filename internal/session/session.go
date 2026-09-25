@@ -34,4 +34,15 @@ type Segment struct {
 	// the same ID and Status "" supersedes either. See internal/live's
 	// two-pass pipeline.
 	Status string `json:"status,omitempty"`
+	// Decision is which rule inside speaker.Tracker.Assign produced
+	// Speaker for this segment ("confident", "sticky", "short-segment",
+	// "new-speaker" — see speaker.AssignDecision), or "" for the mic
+	// source (always "You", never audio-clustered) or when no
+	// clustering ran at all. Plain string rather than importing
+	// speaker.AssignDecision here, since internal/session has no other
+	// reason to depend on internal/speaker. Diagnostic only, purely
+	// informational for a diagnostics view (see
+	// docs/macos-video-hints.md) -- never read back to change
+	// behavior, and safe for older sessions on disk to simply lack it.
+	Decision string `json:"decision,omitempty"`
 }

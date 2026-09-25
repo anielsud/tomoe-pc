@@ -12,6 +12,12 @@ export interface Segment {
   // flight. Absent/"" means final. See internal/live's two-pass
   // pipeline.
   status?: 'live' | 'pending' | '';
+  // Which speaker.Tracker.Assign rule produced `speaker` for this
+  // segment ("confident" | "sticky" | "short-segment" | "new-speaker"),
+  // or "" for mic/system-audio (never audio-clustered) or when no
+  // clustering ran. Diagnostic only -- see DiagnosticsPane; the normal
+  // TranscriptPane ignores this field entirely.
+  decision?: string;
 }
 
 export interface VideoHintActivityEntry {

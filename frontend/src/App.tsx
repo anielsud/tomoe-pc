@@ -8,11 +8,12 @@ import StatusBar from './components/StatusBar'
 import ExportDialog from './components/ExportDialog'
 import VideoHintActivity from './components/VideoHintActivity'
 import VideoHintReview from './components/VideoHintReview'
+import DiagnosticsPane from './components/DiagnosticsPane'
 import { useTranscript } from './hooks/useTranscript'
 import { useSession } from './hooks/useSession'
 import { DeviceInfo, Session, AudioSourceView } from './types'
 
-type View = 'live' | 'sessions' | 'settings' | 'videohints';
+type View = 'live' | 'sessions' | 'settings' | 'videohints' | 'diagnostics';
 
 function App() {
   const [view, setView] = useState<View>('live');
@@ -205,6 +206,13 @@ function App() {
         )}
         <button
           className="btn-icon"
+          title="Diagnostics (live speaker-labeling internals)"
+          onClick={() => setView(view === 'diagnostics' ? 'live' : 'diagnostics')}
+        >
+          &#x1F50D;
+        </button>
+        <button
+          className="btn-icon"
           title="Settings"
           onClick={() => setView(view === 'settings' ? 'live' : 'settings')}
         >
@@ -229,6 +237,10 @@ function App() {
 
       {view === 'videohints' && (
         <VideoHintReview />
+      )}
+
+      {view === 'diagnostics' && (
+        <DiagnosticsPane />
       )}
 
       <StatusBar
