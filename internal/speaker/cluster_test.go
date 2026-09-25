@@ -12,8 +12,8 @@ func TestTrackerAssignSameSpeaker(t *testing.T) {
 	emb1 := []float32{1, 0, 0, 0, 0}
 	emb2 := []float32{0.99, 0.01, 0, 0, 0}
 
-	label1, _ := tracker.Assign(emb1)
-	label2, _ := tracker.Assign(emb2)
+	label1, _ := tracker.Assign(emb1, 2*time.Second)
+	label2, _ := tracker.Assign(emb2, 2*time.Second)
 
 	if label1 != "Person 1" {
 		t.Errorf("first label = %q, want %q", label1, "Person 1")
@@ -33,8 +33,8 @@ func TestTrackerAssignDifferentSpeakers(t *testing.T) {
 	emb1 := []float32{1, 0, 0, 0, 0}
 	emb2 := []float32{0, 1, 0, 0, 0}
 
-	label1, _ := tracker.Assign(emb1)
-	label2, _ := tracker.Assign(emb2)
+	label1, _ := tracker.Assign(emb1, 2*time.Second)
+	label2, _ := tracker.Assign(emb2, 2*time.Second)
 
 	if label1 != "Person 1" {
 		t.Errorf("first label = %q, want %q", label1, "Person 1")
@@ -59,9 +59,9 @@ func TestTrackerThreshold(t *testing.T) {
 	emb1 := []float32{1, 0, 0}
 	emb2 := []float32{0.95, 0.3, 0}
 
-	tracker.Assign(emb1)
+	tracker.Assign(emb1, 2*time.Second)
 	clock.advance(stickyGraceWindow + time.Second)
-	label2, _ := tracker.Assign(emb2)
+	label2, _ := tracker.Assign(emb2, 2*time.Second)
 
 	if label2 != "Person 2" {
 		t.Errorf("with high threshold, label = %q, want %q", label2, "Person 2")
@@ -71,8 +71,8 @@ func TestTrackerThreshold(t *testing.T) {
 func TestTrackerReset(t *testing.T) {
 	tracker := NewTracker(0.8)
 
-	tracker.Assign([]float32{1, 0, 0})
-	tracker.Assign([]float32{0, 1, 0})
+	tracker.Assign([]float32{1, 0, 0}, 2*time.Second)
+	tracker.Assign([]float32{0, 1, 0}, 2*time.Second)
 
 	if tracker.NumSpeakers() != 2 {
 		t.Fatalf("NumSpeakers() before reset = %d, want 2", tracker.NumSpeakers())
@@ -85,7 +85,7 @@ func TestTrackerReset(t *testing.T) {
 	}
 
 	// After reset, next embedding is Person 1 again
-	label, _ := tracker.Assign([]float32{1, 0, 0})
+	label, _ := tracker.Assign([]float32{1, 0, 0}, 2*time.Second)
 	if label != "Person 1" {
 		t.Errorf("after reset, label = %q, want %q", label, "Person 1")
 	}
@@ -93,7 +93,7 @@ func TestTrackerReset(t *testing.T) {
 
 func TestTrackerEmptyEmbedding(t *testing.T) {
 	tracker := NewTracker(0.8)
-	label, _ := tracker.Assign(nil)
+	label, _ := tracker.Assign(nil, 2*time.Second)
 	if label != "Unknown" {
 		t.Errorf("empty embedding label = %q, want %q", label, "Unknown")
 	}
@@ -123,7 +123,7 @@ func TestTrackerMultipleSpeakers(t *testing.T) {
 	}
 
 	for i, emb := range speakers {
-		label, _ := tracker.Assign(emb)
+		label, _ := tracker.Assign(emb, 2*time.Second)
 		want := "Person " + string(rune('1'+i))
 		if label != want {
 			t.Errorf("speaker %d label = %q, want %q", i, label, want)
@@ -132,7 +132,7 @@ func TestTrackerMultipleSpeakers(t *testing.T) {
 
 	// Re-assign same embeddings — should match existing speakers
 	for i, emb := range speakers {
-		label, _ := tracker.Assign(emb)
+		label, _ := tracker.Assign(emb, 2*time.Second)
 		want := "Person " + string(rune('1'+i))
 		if label != want {
 			t.Errorf("re-assign speaker %d label = %q, want %q", i, label, want)
@@ -147,19 +147,19 @@ func TestTrackerMultipleSpeakers(t *testing.T) {
 func TestTrackerSetHintForRecent(t *testing.T) {
 	tracker := NewTracker(0.8)
 
-	tracker.Assign([]float32{1, 0, 0}) // Person 1
-	tracker.Assign([]float32{0, 1, 0}) // Person 2, most recently assigned
+	tracker.Assign([]float32{1, 0, 0}, 2*time.Second) // Person 1
+	tracker.Assign([]float32{0, 1, 0}, 2*time.Second) // Person 2, most recently assigned
 
 	if ok := tracker.SetHintForRecent("Nazanin", time.Minute); !ok {
 		t.Fatal("SetHintForRecent() = false, want true")
 	}
 
 	// The hint should attach to Person 2 (most recently assigned), not Person 1.
-	label1, _ := tracker.Assign([]float32{0.99, 0.01, 0})
+	label1, _ := tracker.Assign([]float32{0.99, 0.01, 0}, 2*time.Second)
 	if label1 != "Person 1" {
 		t.Errorf("Person 1 label = %q, want unchanged %q", label1, "Person 1")
 	}
-	label2, _ := tracker.Assign([]float32{0, 0.99, 0.01})
+	label2, _ := tracker.Assign([]float32{0, 0.99, 0.01}, 2*time.Second)
 	if label2 != "Person 2 (Nazanin)" {
 		t.Errorf("Person 2 label = %q, want %q", label2, "Person 2 (Nazanin)")
 	}
@@ -167,7 +167,7 @@ func TestTrackerSetHintForRecent(t *testing.T) {
 
 func TestTrackerSetHintForRecent_KeepsFullNameOverLaterTruncation(t *testing.T) {
 	tracker := NewTracker(0.8)
-	tracker.Assign([]float32{0, 1, 0}) // Person 1
+	tracker.Assign([]float32{0, 1, 0}, 2*time.Second) // Person 1
 
 	if ok := tracker.SetHintForRecent("Nazanin Ramezani", time.Minute); !ok {
 		t.Fatal("SetHintForRecent() = false, want true")
@@ -175,12 +175,12 @@ func TestTrackerSetHintForRecent_KeepsFullNameOverLaterTruncation(t *testing.T) 
 	// Re-select Person 1 as most recently assigned, then attach a
 	// truncated read of the same name (as a tile label might produce
 	// on a later OCR pass) -- it must not clobber the full name.
-	tracker.Assign([]float32{0, 0.99, 0.01})
+	tracker.Assign([]float32{0, 0.99, 0.01}, 2*time.Second)
 	if ok := tracker.SetHintForRecent("Nazanin Rame…", time.Minute); !ok {
 		t.Fatal("SetHintForRecent() = false, want true")
 	}
 
-	label, _ := tracker.Assign([]float32{0, 0.98, 0.02})
+	label, _ := tracker.Assign([]float32{0, 0.98, 0.02}, 2*time.Second)
 	if label != "Person 1 (Nazanin Ramezani)" {
 		t.Errorf("label = %q, want full name kept, got truncated overwrite", label)
 	}
@@ -188,15 +188,15 @@ func TestTrackerSetHintForRecent_KeepsFullNameOverLaterTruncation(t *testing.T) 
 
 func TestTrackerSetHintForRecent_UpgradesTruncatedNameToFuller(t *testing.T) {
 	tracker := NewTracker(0.8)
-	tracker.Assign([]float32{0, 1, 0}) // Person 1
+	tracker.Assign([]float32{0, 1, 0}, 2*time.Second) // Person 1
 
 	tracker.SetHintForRecent("Nazanin Rame…", time.Minute)
-	tracker.Assign([]float32{0, 0.99, 0.01})
+	tracker.Assign([]float32{0, 0.99, 0.01}, 2*time.Second)
 	if ok := tracker.SetHintForRecent("Nazanin Ramezani", time.Minute); !ok {
 		t.Fatal("SetHintForRecent() = false, want true")
 	}
 
-	label, _ := tracker.Assign([]float32{0, 0.98, 0.02})
+	label, _ := tracker.Assign([]float32{0, 0.98, 0.02}, 2*time.Second)
 	if label != "Person 1 (Nazanin Ramezani)" {
 		t.Errorf("label = %q, want the fuller name to replace the truncated one", label)
 	}
@@ -204,15 +204,15 @@ func TestTrackerSetHintForRecent_UpgradesTruncatedNameToFuller(t *testing.T) {
 
 func TestTrackerSetHintForRecent_UnrelatedNameOverwrites(t *testing.T) {
 	tracker := NewTracker(0.8)
-	tracker.Assign([]float32{0, 1, 0}) // Person 1
+	tracker.Assign([]float32{0, 1, 0}, 2*time.Second) // Person 1
 
 	tracker.SetHintForRecent("Nazanin Ramezani", time.Minute)
-	tracker.Assign([]float32{0, 0.99, 0.01})
+	tracker.Assign([]float32{0, 0.99, 0.01}, 2*time.Second)
 	if ok := tracker.SetHintForRecent("Colin Whittingham", time.Minute); !ok {
 		t.Fatal("SetHintForRecent() = false, want true")
 	}
 
-	label, _ := tracker.Assign([]float32{0, 0.98, 0.02})
+	label, _ := tracker.Assign([]float32{0, 0.98, 0.02}, 2*time.Second)
 	if label != "Person 1 (Colin Whittingham)" {
 		t.Errorf("label = %q, want an unrelated name to overwrite normally", label)
 	}
@@ -220,7 +220,7 @@ func TestTrackerSetHintForRecent_UnrelatedNameOverwrites(t *testing.T) {
 
 func TestTrackerSetHintForRecent_TooOld(t *testing.T) {
 	tracker := NewTracker(0.8)
-	tracker.Assign([]float32{1, 0, 0})
+	tracker.Assign([]float32{1, 0, 0}, 2*time.Second)
 
 	if ok := tracker.SetHintForRecent("Someone", -time.Second); ok {
 		t.Error("SetHintForRecent() with a negative maxAge = true, want false")
@@ -236,11 +236,11 @@ func TestTrackerSetHintForRecent_NoSpeakersYet(t *testing.T) {
 
 func TestTrackerResetClearsHints(t *testing.T) {
 	tracker := NewTracker(0.8)
-	tracker.Assign([]float32{1, 0, 0})
+	tracker.Assign([]float32{1, 0, 0}, 2*time.Second)
 	tracker.SetHintForRecent("Nazanin", time.Minute)
 	tracker.Reset()
 
-	label, _ := tracker.Assign([]float32{1, 0, 0})
+	label, _ := tracker.Assign([]float32{1, 0, 0}, 2*time.Second)
 	if label != "Person 1" {
 		t.Errorf("after reset, label = %q, want plain %q (hint should be cleared)", label, "Person 1")
 	}
@@ -259,7 +259,7 @@ func TestTrackerStickySpeaker_AcceptsNearMissFromRecentSpeaker(t *testing.T) {
 	clock := &fakeClock{t: time.Now()}
 	tracker.nowFn = clock.now
 
-	label1, _ := tracker.Assign([]float32{1, 0, 0, 0})
+	label1, _ := tracker.Assign([]float32{1, 0, 0, 0}, 2*time.Second)
 	if label1 != "Person 1" {
 		t.Fatalf("first label = %q, want %q", label1, "Person 1")
 	}
@@ -270,7 +270,7 @@ func TestTrackerStickySpeaker_AcceptsNearMissFromRecentSpeaker(t *testing.T) {
 	// grace window.
 	clock.advance(500 * time.Millisecond)
 	near := []float32{0.7, 0.7141428, 0, 0} // cosine sim to {1,0,0,0} ~= 0.70
-	label2, _ := tracker.Assign(near)
+	label2, _ := tracker.Assign(near, 2*time.Second)
 	if label2 != "Person 1" {
 		t.Errorf("near-miss recent-speaker label = %q, want %q (sticky match)", label2, "Person 1")
 	}
@@ -284,11 +284,11 @@ func TestTrackerStickySpeaker_DoesNotApplyPastGraceWindow(t *testing.T) {
 	clock := &fakeClock{t: time.Now()}
 	tracker.nowFn = clock.now
 
-	tracker.Assign([]float32{1, 0, 0, 0}) // Person 1
+	tracker.Assign([]float32{1, 0, 0, 0}, 2*time.Second) // Person 1
 
 	clock.advance(stickyGraceWindow + time.Second)
 	near := []float32{0.7, 0.7141428, 0, 0}
-	label2, _ := tracker.Assign(near)
+	label2, _ := tracker.Assign(near, 2*time.Second)
 	if label2 != "Person 2" {
 		t.Errorf("near-miss outside grace window label = %q, want %q (new speaker)", label2, "Person 2")
 	}
@@ -299,14 +299,14 @@ func TestTrackerStickySpeaker_DoesNotApplyToADifferentBestMatch(t *testing.T) {
 	clock := &fakeClock{t: time.Now()}
 	tracker.nowFn = clock.now
 
-	tracker.Assign([]float32{1, 0, 0, 0}) // Person 1
-	tracker.Assign([]float32{0, 0, 0, 1}) // Person 2, now the most recently assigned
+	tracker.Assign([]float32{1, 0, 0, 0}, 2*time.Second) // Person 1
+	tracker.Assign([]float32{0, 0, 0, 1}, 2*time.Second) // Person 2, now the most recently assigned
 
 	// A genuinely poor match for everyone (best match is Person 1, but
 	// nowhere near even the sticky margin) must still become a new
 	// speaker, regardless of timing.
 	clock.advance(100 * time.Millisecond)
-	label, _ := tracker.Assign([]float32{0.3, 0.3, 0.3, 0.3})
+	label, _ := tracker.Assign([]float32{0.3, 0.3, 0.3, 0.3}, 2*time.Second)
 	if label != "Person 3" {
 		t.Errorf("poor match label = %q, want %q (new speaker)", label, "Person 3")
 	}
@@ -317,32 +317,119 @@ func TestTrackerStickySpeaker_DoesNotPolluteCentroid(t *testing.T) {
 	clock := &fakeClock{t: time.Now()}
 	tracker.nowFn = clock.now
 
-	tracker.Assign([]float32{1, 0, 0, 0}) // Person 1's centroid: {1,0,0,0}
+	tracker.Assign([]float32{1, 0, 0, 0}, 2*time.Second) // Person 1's centroid: {1,0,0,0}
 
 	clock.advance(time.Second)
-	tracker.Assign([]float32{0.7, 0.7141428, 0, 0}) // sticky match, must not update the centroid
+	tracker.Assign([]float32{0.7, 0.7141428, 0, 0}, 2*time.Second) // sticky match, must not update the centroid
 
 	// A fresh, perfectly-orthogonal embedding should still be judged
 	// against Person 1's ORIGINAL centroid, not one dragged toward the
 	// noisier sticky-matched sample.
 	clock.advance(time.Second)
-	label, _ := tracker.Assign([]float32{0, 1, 0, 0})
+	label, _ := tracker.Assign([]float32{0, 1, 0, 0}, 2*time.Second)
 	if label == "Person 1" {
 		t.Errorf("orthogonal embedding matched Person 1 — centroid was polluted by the sticky match")
+	}
+}
+
+func TestTrackerShortSegment_DefaultsToLastSpeakerEvenOnPoorMatch(t *testing.T) {
+	tracker := NewTracker(0.8)
+	clock := &fakeClock{t: time.Now()}
+	tracker.nowFn = clock.now
+
+	tracker.Assign([]float32{1, 0, 0, 0}, 2*time.Second) // Person 1
+
+	// A short interjection ("Um") whose embedding doesn't even clear the
+	// sticky margin against Person 1 -- without the short-segment
+	// fallback this would become a brand-new speaker, reproducing the
+	// real-world failure this fix targets (a dozen-plus new "Person N"
+	// labels for one continuous speaker's filler words).
+	clock.advance(2 * time.Second)
+	label, _ := tracker.Assign([]float32{0, 0, 1, 0}, 300*time.Millisecond)
+	if label != "Person 1" {
+		t.Errorf("short poor-match segment label = %q, want %q (default to last speaker)", label, "Person 1")
+	}
+	if tracker.NumSpeakers() != 1 {
+		t.Errorf("NumSpeakers() = %d, want 1 (short segment must not spawn a new speaker)", tracker.NumSpeakers())
+	}
+}
+
+func TestTrackerShortSegment_DoesNotApplyPastGraceWindow(t *testing.T) {
+	tracker := NewTracker(0.8)
+	clock := &fakeClock{t: time.Now()}
+	tracker.nowFn = clock.now
+
+	tracker.Assign([]float32{1, 0, 0, 0}, 2*time.Second) // Person 1
+
+	clock.advance(shortSegmentGraceWindow + time.Second)
+	label, _ := tracker.Assign([]float32{0, 0, 1, 0}, 300*time.Millisecond)
+	if label != "Person 2" {
+		t.Errorf("short segment far past the grace window label = %q, want %q (new speaker)", label, "Person 2")
+	}
+}
+
+func TestTrackerShortSegment_NoPriorAssignmentStillCreatesNewSpeaker(t *testing.T) {
+	tracker := NewTracker(0.8)
+
+	// The very first segment ever seen: there's no "last speaker" to
+	// default to, so a short/noisy embedding must still found a real
+	// speaker rather than being silently dropped.
+	label, _ := tracker.Assign([]float32{1, 0, 0, 0}, 300*time.Millisecond)
+	if label != "Person 1" {
+		t.Errorf("first-ever short segment label = %q, want %q", label, "Person 1")
+	}
+	if tracker.NumSpeakers() != 1 {
+		t.Errorf("NumSpeakers() = %d, want 1", tracker.NumSpeakers())
+	}
+}
+
+func TestTrackerShortSegment_DoesNotPolluteCentroid(t *testing.T) {
+	tracker := NewTracker(0.8)
+	clock := &fakeClock{t: time.Now()}
+	tracker.nowFn = clock.now
+
+	tracker.Assign([]float32{1, 0, 0, 0}, 2*time.Second) // Person 1's centroid: {1,0,0,0}
+
+	clock.advance(time.Second)
+	tracker.Assign([]float32{0, 0, 1, 0}, 300*time.Millisecond) // short-segment fallback, must not update the centroid
+
+	// A fresh, perfectly-orthogonal embedding should still be judged
+	// against Person 1's ORIGINAL centroid, not one dragged toward the
+	// noisy short segment.
+	clock.advance(time.Second)
+	label, _ := tracker.Assign([]float32{0, 1, 0, 0}, 2*time.Second)
+	if label == "Person 1" {
+		t.Errorf("orthogonal embedding matched Person 1 — centroid was polluted by the short-segment fallback")
+	}
+}
+
+func TestTrackerShortSegment_AtMinDurationBehavesAsNormal(t *testing.T) {
+	tracker := NewTracker(0.8)
+	clock := &fakeClock{t: time.Now()}
+	tracker.nowFn = clock.now
+
+	tracker.Assign([]float32{1, 0, 0, 0}, 2*time.Second) // Person 1
+
+	// Exactly at minAssignDuration (not below it) — the fallback must
+	// NOT apply; a poor match at this duration is a real new speaker.
+	clock.advance(time.Second)
+	label, _ := tracker.Assign([]float32{0, 0, 1, 0}, minAssignDuration)
+	if label != "Person 2" {
+		t.Errorf("poor match exactly at minAssignDuration label = %q, want %q (new speaker)", label, "Person 2")
 	}
 }
 
 func TestTrackerAssign_NeedsHintUntilOneAttaches(t *testing.T) {
 	tracker := NewTracker(0.8)
 
-	_, needsHint := tracker.Assign([]float32{1, 0, 0})
+	_, needsHint := tracker.Assign([]float32{1, 0, 0}, 2*time.Second)
 	if !needsHint {
 		t.Error("brand new speaker: needsHint = false, want true")
 	}
 
 	tracker.SetHintForRecent("Nazanin", time.Minute)
 
-	_, needsHint = tracker.Assign([]float32{0.99, 0.01, 0})
+	_, needsHint = tracker.Assign([]float32{0.99, 0.01, 0}, 2*time.Second)
 	if needsHint {
 		t.Error("speaker with an attached hint: needsHint = true, want false")
 	}
@@ -350,7 +437,7 @@ func TestTrackerAssign_NeedsHintUntilOneAttaches(t *testing.T) {
 
 func TestTrackerAssign_EmptyEmbeddingNeverNeedsHint(t *testing.T) {
 	tracker := NewTracker(0.8)
-	_, needsHint := tracker.Assign(nil)
+	_, needsHint := tracker.Assign(nil, 2*time.Second)
 	if needsHint {
 		t.Error("empty embedding: needsHint = true, want false (no real speaker to hint)")
 	}

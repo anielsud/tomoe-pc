@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 
@@ -374,7 +375,8 @@ func (c *Coordinator) assignSpeaker(source SourceType, samples []float32) string
 	if c.cfg.Embedder != nil && c.cfg.Tracker != nil {
 		embedding, err := c.cfg.Embedder.Extract(samples)
 		if err == nil && len(embedding) > 0 {
-			label, needsHint := c.cfg.Tracker.Assign(embedding)
+			duration := time.Duration(float64(len(samples)) / vadSampleRate * float64(time.Second))
+			label, needsHint := c.cfg.Tracker.Assign(embedding, duration)
 			if needsHint {
 				// Non-blocking: a video-hint check is worth doing right
 				// away rather than waiting for videohint.Poll's next

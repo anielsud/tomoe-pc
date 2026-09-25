@@ -30,6 +30,28 @@ const (
 	stickyThresholdMargin = 0.15
 )
 
+// minAssignDuration and shortSegmentGraceWindow handle a segment too
+// short to trust a fresh identity decision from at all: a filler word
+// ("Um", "Uh") or any sub-second interjection produces an embedding
+// dominated by near-silence/breath noise rather than real vocal-tract
+// signal, and can end up with low similarity to EVERY existing
+// centroid -- including its real speaker's -- failing even the
+// sticky-speaker check above. Observed live in a real multi-participant
+// transcript: a dozen-plus brand-new "Person N" labels inside one
+// minute, nearly all one-word interjections from what was actually a
+// single ongoing speaker. Too little signal to know who this is should
+// default to "whoever was just speaking", not "a new person" -- the
+// latter is almost never right for a short interjection mid-
+// conversation. shortSegmentGraceWindow is deliberately wider than
+// stickyGraceWindow: a short interjection can trail the last
+// confidently-assigned speech by more than 3s and still obviously
+// belong to the same person (observed gaps up to ~12s in that same
+// transcript).
+const (
+	minAssignDuration       = 700 * time.Millisecond
+	shortSegmentGraceWindow = 15 * time.Second
+)
+
 // Tracker performs online speaker clustering using cosine similarity of embeddings.
 // Speakers are labeled "Person 1", "Person 2", etc. — optionally suffixed
 // with a real name in parens (e.g. "Person 2 (Nazanin Rame...)") once a
@@ -68,13 +90,16 @@ func NewTracker(threshold float64) *Tracker {
 }
 
 // Assign assigns an embedding to a speaker, creating a new speaker if no
-// match is found. Returns a label like "Person 1", or "Person 1 (Name)"
-// if a video hint has already been attached to that speaker via
-// SetHintForRecent, plus needsHint: true if this speaker still has no
-// hint attached, so a caller (internal/live's Coordinator) can signal
-// that a video-hint check is worth doing right away rather than waiting
-// for videohint.Poll's next scheduled tick — see Coordinator.HintNeeded.
-func (t *Tracker) Assign(embedding []float32) (label string, needsHint bool) {
+// match is found. duration is how much audio the embedding was computed
+// from (see minAssignDuration's doc comment — too little audio never
+// spawns a new speaker or breaks continuity, regardless of similarity).
+// Returns a label like "Person 1", or "Person 1 (Name)" if a video hint
+// has already been attached to that speaker via SetHintForRecent, plus
+// needsHint: true if this speaker still has no hint attached, so a
+// caller (internal/live's Coordinator) can signal that a video-hint
+// check is worth doing right away rather than waiting for
+// videohint.Poll's next scheduled tick — see Coordinator.HintNeeded.
+func (t *Tracker) Assign(embedding []float32, duration time.Duration) (label string, needsHint bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -115,6 +140,20 @@ func (t *Tracker) Assign(embedding []float32) (label string, needsHint bool) {
 		// stickyGraceWindow for why not).
 		t.lastAssignedAt = now
 		return t.label(bestIdx), t.hints[bestIdx] == ""
+	}
+
+	if duration < minAssignDuration && len(t.centroids) > 0 &&
+		!t.lastAssignedAt.IsZero() && now.Sub(t.lastAssignedAt) <= shortSegmentGraceWindow {
+		// Not enough audio to trust either a confident match or even
+		// the sticky check above -- default to whoever was just
+		// speaking rather than spawning a new person from noise. Same
+		// "don't pollute a good centroid with a bad signal" principle
+		// as the sticky match: the centroid isn't touched. lastAssignedAt
+		// IS refreshed, so a run of short interjections keeps renewing
+		// its own grace window instead of expiring mid-run.
+		idx := t.lastAssignedIdx
+		t.lastAssignedAt = now
+		return t.label(idx), t.hints[idx] == ""
 	}
 
 	// New speaker
