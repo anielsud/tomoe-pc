@@ -70,7 +70,12 @@ type Coordinator struct {
 	cfg          Config
 	segmentCh    chan session.Segment
 	activityCh   chan struct{} // signalled when VAD detects ongoing speech
-	hintNeededCh chan struct{} // signalled when a monitor-source speaker with no video hint yet is heard
+	// hintNeededCh is signalled when a monitor-source speaker with no
+	// video hint yet is heard. The bool is a priority flag: true means
+	// "bypass videohint.Poll's normal trigger debounce" (used for a
+	// brand-new speaker, where a fast double-shot attempt matters more
+	// than the usual rate limit), false is the ordinary debounced case.
+	hintNeededCh chan bool
 	startTime    time.Time
 
 	// segmentUpdateCh carries revisions to a segment already sent on
@@ -109,7 +114,7 @@ func New(cfg Config) *Coordinator {
 		segmentCh:       make(chan session.Segment, bufSize),
 		segmentUpdateCh: make(chan session.Segment, bufSize),
 		activityCh:      make(chan struct{}, 1),
-		hintNeededCh:    make(chan struct{}, 1),
+		hintNeededCh:    make(chan bool, 1),
 		refineCh:        make(chan refinementJob, bufSize),
 	}
 }
@@ -192,9 +197,23 @@ func (c *Coordinator) Activity() <-chan struct{} {
 // videohint.Poll's trigger parameter so a still-unlabeled speaker gets
 // an immediate ring/OCR attempt instead of waiting for Poll's next
 // scheduled tick — see internal/speaker.Tracker.Assign's needsHint
-// return value, which is what actually decides when this fires.
-func (c *Coordinator) HintNeeded() <-chan struct{} {
+// return value, which is what actually decides when this fires. The
+// bool is a priority flag (true = bypass Poll's normal trigger
+// debounce) -- see signalHintNeeded.
+func (c *Coordinator) HintNeeded() <-chan bool {
 	return c.hintNeededCh
+}
+
+// signalHintNeeded sends on hintNeededCh without blocking -- if the
+// single-slot buffer is already full (Poll hasn't drained the
+// previous signal yet), this drops rather than stalling the
+// transcription pipeline, same as every other non-blocking channel
+// send in this package.
+func (c *Coordinator) signalHintNeeded(priority bool) {
+	select {
+	case c.hintNeededCh <- priority:
+	default:
+	}
 }
 
 // Stop stops all pipelines and waits for them to finish.

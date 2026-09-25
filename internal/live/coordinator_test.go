@@ -650,3 +650,45 @@ func TestLiveStateReset(t *testing.T) {
 		t.Errorf("reset() left non-zero state: %+v", live)
 	}
 }
+
+func TestSignalHintNeeded_DeliversPriorityFlag(t *testing.T) {
+	c := New(Config{})
+
+	c.signalHintNeeded(true)
+	select {
+	case priority := <-c.HintNeeded():
+		if !priority {
+			t.Error("priority = false, want true")
+		}
+	default:
+		t.Fatal("HintNeeded() had nothing buffered after signalHintNeeded(true)")
+	}
+
+	c.signalHintNeeded(false)
+	select {
+	case priority := <-c.HintNeeded():
+		if priority {
+			t.Error("priority = true, want false")
+		}
+	default:
+		t.Fatal("HintNeeded() had nothing buffered after signalHintNeeded(false)")
+	}
+}
+
+func TestSignalHintNeeded_NonBlockingWhenBufferFull(t *testing.T) {
+	c := New(Config{})
+
+	c.signalHintNeeded(false)
+	// The single-slot buffer is now full; a second signal must be
+	// dropped rather than blocking the caller.
+	done := make(chan struct{})
+	go func() {
+		c.signalHintNeeded(true)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("signalHintNeeded() blocked with a full buffer, want a non-blocking drop")
+	}
+}

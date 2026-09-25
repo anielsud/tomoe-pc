@@ -37,11 +37,14 @@ const (
 // signals trigger the moment it hears a monitor-source speaker with no
 // video hint yet (see Coordinator.HintNeeded), so a still-unknown
 // speaker gets an OCR attempt as soon as possible instead of waiting up
-// to interval. trigger-driven attempts are debounced by
-// triggerDebounce so a speaker who keeps talking without ever getting
-// a hint can't trigger attempts faster than that; the ticker itself is
-// never debounced. trigger may be nil if a caller doesn't want this
-// (e.g. a bare interval-only poll). Both interval and triggerDebounce
+// to interval. The bool sent on trigger is a priority flag: false is
+// the ordinary case, debounced by triggerDebounce so a speaker who
+// keeps talking without ever getting a hint can't trigger attempts
+// faster than that; true (sent for a brand-new speaker, rarer and more
+// valuable to resolve quickly) bypasses the debounce entirely. The
+// ticker itself is never debounced either way. trigger may be nil if a
+// caller doesn't want this (e.g. a bare interval-only poll). Both
+// interval and triggerDebounce
 // come from config.toml (MeetingConfig.VideoHintPollInterval/
 // VideoHintTriggerDebounce) at the call site, read fresh each time a
 // new meeting session starts — so, unlike speaker.Tracker's tuning,
@@ -78,7 +81,7 @@ const (
 // Blocks until ctx is cancelled; meant to be run in its own goroutine,
 // one per live meeting session, cancelled when that session stops
 // (see internal/daemon and internal/backend's meeting start/stop).
-func Poll(ctx context.Context, interval, triggerDebounce time.Duration, trigger <-chan struct{}, events chan<- Event) {
+func Poll(ctx context.Context, interval, triggerDebounce time.Duration, trigger <-chan bool, events chan<- Event) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -100,8 +103,12 @@ func Poll(ctx context.Context, interval, triggerDebounce time.Duration, trigger 
 			return
 		case <-ticker.C:
 			attempt(false)
-		case <-trigger:
-			attempt(true)
+		case priority := <-trigger:
+			// priority (from a brand-new speaker, see
+			// live.Coordinator.signalHintNeeded) bypasses the normal
+			// debounce entirely -- rarer and more valuable to resolve
+			// than an ordinary "still no hint" retry.
+			attempt(!priority)
 		}
 	}
 }

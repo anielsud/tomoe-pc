@@ -376,16 +376,30 @@ func (c *Coordinator) assignSpeaker(source SourceType, samples []float32) string
 		embedding, err := c.cfg.Embedder.Extract(samples)
 		if err == nil && len(embedding) > 0 {
 			duration := time.Duration(float64(len(samples)) / vadSampleRate * float64(time.Second))
+			before := c.cfg.Tracker.NumSpeakers()
 			label, needsHint := c.cfg.Tracker.Assign(embedding, duration)
-			if needsHint {
+			isNew := c.cfg.Tracker.NumSpeakers() > before
+
+			if isNew {
+				// A brand-new speaker is rarer and more valuable to
+				// resolve than an ordinary "still no hint" retry --
+				// found live: waiting on the regular debounced trigger
+				// alone made naming attempts feel too infrequent to
+				// ever catch a fast-moving ring. Fire twice,
+				// bypassing the usual debounce entirely: once right
+				// now, and once again ~500ms later in case the ring/
+				// label hadn't rendered yet on the first attempt.
+				c.signalHintNeeded(true)
+				go func() {
+					time.Sleep(500 * time.Millisecond)
+					c.signalHintNeeded(true)
+				}()
+			} else if needsHint {
 				// Non-blocking: a video-hint check is worth doing right
 				// away rather than waiting for videohint.Poll's next
 				// scheduled tick, but this pipeline must never stall
 				// waiting for a slow/absent consumer.
-				select {
-				case c.hintNeededCh <- struct{}{}:
-				default:
-				}
+				c.signalHintNeeded(false)
 			}
 			return label
 		}
