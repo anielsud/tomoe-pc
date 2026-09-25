@@ -19,6 +19,7 @@ const (
 	StageNoRule         EventStage = "no_rule"
 	StageRingMatched    EventStage = "ring_matched"
 	StageNoRingMatch    EventStage = "no_ring_match"
+	StageAmbiguousRing  EventStage = "ambiguous_ring"
 	StageNoLabelRegion  EventStage = "no_label_region"
 	StageOCRHit         EventStage = "ocr_hit"
 	StageOCRMiss        EventStage = "ocr_miss"

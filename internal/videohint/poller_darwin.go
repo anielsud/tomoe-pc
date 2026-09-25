@@ -17,13 +17,6 @@ const (
 	maxSnapshotsPerPoll = 5
 	// minSnapshotInterval rate-limits captures within that cap.
 	minSnapshotInterval = 60 * time.Second
-	// minAttemptInterval debounces trigger-driven attempts (see
-	// Poll's trigger parameter): a still-unlabeled speaker who keeps
-	// talking would otherwise re-signal on every utterance, hammering
-	// ScreenCaptureKit + Vision far faster than either needs to run.
-	// The scheduled ticker is unaffected by this — it always fires at
-	// its own interval regardless of when the last attempt happened.
-	minAttemptInterval = 1 * time.Second
 )
 
 // Poll periodically looks for a window FindMeetingWindow's heuristic
@@ -44,11 +37,16 @@ const (
 // signals trigger the moment it hears a monitor-source speaker with no
 // video hint yet (see Coordinator.HintNeeded), so a still-unknown
 // speaker gets an OCR attempt as soon as possible instead of waiting up
-// to interval. trigger-driven attempts are debounced (minAttemptInterval)
-// so a speaker who keeps talking without ever getting a hint can't
-// trigger attempts faster than that; the ticker itself is never
-// debounced. trigger may be nil if a caller doesn't want this (e.g. a
-// bare interval-only poll).
+// to interval. trigger-driven attempts are debounced by
+// triggerDebounce so a speaker who keeps talking without ever getting
+// a hint can't trigger attempts faster than that; the ticker itself is
+// never debounced. trigger may be nil if a caller doesn't want this
+// (e.g. a bare interval-only poll). Both interval and triggerDebounce
+// come from config.toml (MeetingConfig.VideoHintPollInterval/
+// VideoHintTriggerDebounce) at the call site, read fresh each time a
+// new meeting session starts — so, unlike speaker.Tracker's tuning,
+// retuning these takes a fresh session rather than a live mid-session
+// hot-reload, but still needs no rebuild or relaunch.
 //
 // Every step is reported on events (one Event per stage reached this
 // tick, in order — see EventStage) so a caller can show not just
@@ -80,7 +78,7 @@ const (
 // Blocks until ctx is cancelled; meant to be run in its own goroutine,
 // one per live meeting session, cancelled when that session stops
 // (see internal/daemon and internal/backend's meeting start/stop).
-func Poll(ctx context.Context, interval time.Duration, trigger <-chan struct{}, events chan<- Event) {
+func Poll(ctx context.Context, interval, triggerDebounce time.Duration, trigger <-chan struct{}, events chan<- Event) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -89,7 +87,7 @@ func Poll(ctx context.Context, interval time.Duration, trigger <-chan struct{}, 
 	captured := 0
 
 	attempt := func(debounce bool) {
-		if debounce && !lastAttempt.IsZero() && time.Since(lastAttempt) < minAttemptInterval {
+		if debounce && !lastAttempt.IsZero() && time.Since(lastAttempt) < triggerDebounce {
 			return
 		}
 		lastAttempt = time.Now()
@@ -144,7 +142,17 @@ func pollOnce(events chan<- Event, lastCapture *time.Time, captured *int) {
 	}
 	if !ok {
 		sendEvent(events, Event{Time: time.Now(), Platform: platform, Stage: StageNoRule, Detail: reason})
-	} else if ring, found := DetectRing(frame.Pix, frame.Width, frame.Height, rule.Ring); found {
+	} else if ring, found, ambiguous := DetectRing(frame.Pix, frame.Width, frame.Height, rule.Ring); ambiguous {
+		// More than one plausible ring in the same frame -- observed
+		// live: two people highlighted at once, and picking "the
+		// best-scoring one" attributed a naming hint to the wrong
+		// person. Skip attribution entirely for this tick rather than
+		// guess; nothing to escalate either, since this isn't a rule
+		// gap, it's a genuinely ambiguous moment that should resolve
+		// itself once only one ring is lit.
+		reason = "multiple rings found in the same frame -- skipping attribution"
+		sendEvent(events, Event{Time: time.Now(), Platform: platform, Stage: StageAmbiguousRing, Detail: reason})
+	} else if found {
 		sendEvent(events, Event{Time: time.Now(), Platform: platform, Stage: StageRingMatched, Detail: fmt.Sprintf("ring at (%d,%d) %dx%d, confidence %.2f", ring.X, ring.Y, ring.Width, ring.Height, ring.Confidence)})
 
 		if !rule.Label.configured() {

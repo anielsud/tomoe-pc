@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"strings"
 )
 
 // LabelRect computes the pixel rectangle of a meeting app's name-label
@@ -74,7 +75,41 @@ func RecognizeLabel(pix []byte, frameWidth, frameHeight int, ring RingMatch, lab
 	if err != nil {
 		return "", err
 	}
-	return RecognizeText(crop, cw, ch)
+	text, err := RecognizeText(crop, cw, ch)
+	if err != nil {
+		return "", err
+	}
+	return cleanOCRName(text), nil
+}
+
+// knownUINoiseWords lists trailing tokens the label crop's own overlay
+// chrome can bleed into an OCR read — found live: a real name read as
+// "Devin Dobrowolski Priv", where "Priv" came from Teams' background-
+// blur/privacy indicator overlapping the crop region, not the name
+// itself. Matched case-insensitively as a TRAILING word only (a real
+// name is never expected to end with one of these), including a
+// partial-word match, since OCR can truncate an overlay icon's own
+// label the exact same way it truncates a name.
+var knownUINoiseWords = []string{"privacy", "muted", "mute", "recording", "live"}
+
+// cleanOCRName strips a single trailing UI-chrome noise word from a
+// raw OCR read of a name label, if the last word matches (or is a
+// >=3-character prefix of) one of knownUINoiseWords. Never strips more
+// than one trailing word, and leaves a one-word read untouched (there's
+// nothing for it to "trail").
+func cleanOCRName(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	words := strings.Fields(trimmed)
+	if len(words) < 2 {
+		return trimmed
+	}
+	last := strings.ToLower(words[len(words)-1])
+	for _, noise := range knownUINoiseWords {
+		if last == noise || (len(last) >= 3 && strings.HasPrefix(noise, last)) {
+			return strings.Join(words[:len(words)-1], " ")
+		}
+	}
+	return trimmed
 }
 
 // RingThumbnailPNG crops the ring's own bounding box out of frame (the

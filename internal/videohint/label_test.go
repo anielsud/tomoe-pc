@@ -82,3 +82,22 @@ func TestCropRGB_EmptyAfterClamping(t *testing.T) {
 		t.Error("cropRGB() with an entirely out-of-bounds rectangle: want error, got nil")
 	}
 }
+
+func TestCleanOCRName(t *testing.T) {
+	cases := []struct {
+		raw, want string
+	}{
+		{"Devin Dobrowolski Priv", "Devin Dobrowolski"},
+		{"Devin Dobrowolski Privacy", "Devin Dobrowolski"},
+		{"Nazanin Ramezani Muted", "Nazanin Ramezani"},
+		{"Nazanin Ramezani Recording", "Nazanin Ramezani"},
+		{"Christian Stanton", "Christian Stanton"}, // no noise word, unchanged
+		{"Privacy", "Privacy"},                     // single word alone is never stripped
+		{"  Devin Dobrowolski Priv  ", "Devin Dobrowolski"},
+	}
+	for _, c := range cases {
+		if got := cleanOCRName(c.raw); got != c.want {
+			t.Errorf("cleanOCRName(%q) = %q, want %q", c.raw, got, c.want)
+		}
+	}
+}

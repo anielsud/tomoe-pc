@@ -89,6 +89,24 @@ type MeetingConfig struct {
 	VideoHintTriggerDebounce float64 `toml:"video_hint_trigger_debounce"`
 }
 
+// VideoHintTiming converts VideoHintPollInterval/VideoHintTriggerDebounce
+// into time.Duration, falling back to DefaultConfig's values for
+// anything zero/invalid — the one place this seconds-to-Duration
+// conversion happens, shared by internal/backend and internal/daemon
+// rather than duplicated at each videohint.Poll call site.
+func (m MeetingConfig) VideoHintTiming() (pollInterval, triggerDebounce time.Duration) {
+	def := DefaultConfig().Meeting
+	interval := m.VideoHintPollInterval
+	if interval <= 0 {
+		interval = def.VideoHintPollInterval
+	}
+	debounce := m.VideoHintTriggerDebounce
+	if debounce <= 0 {
+		debounce = def.VideoHintTriggerDebounce
+	}
+	return time.Duration(interval * float64(time.Second)), time.Duration(debounce * float64(time.Second))
+}
+
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{

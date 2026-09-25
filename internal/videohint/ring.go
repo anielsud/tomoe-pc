@@ -16,9 +16,18 @@ const hollownessFloor = 0.3
 
 // DetectRing looks for a hollow rectangular border matching cfg within
 // an RGB pixel buffer (packed, no padding, 3 bytes per pixel — the same
-// shape as teamsvideo.Frame.Pix). Returns the best candidate, or (nil,
-// false) if cfg is unconfigured (the zero value — see RingConfig) or
-// nothing plausible is found.
+// shape as teamsvideo.Frame.Pix). Returns the single plausible
+// candidate, or (nil, false, false) if cfg is unconfigured (the zero
+// value — see RingConfig) or nothing plausible is found.
+//
+// ambiguous is true when MORE THAN ONE plausible candidate was found
+// in the same frame (match is nil in that case too) — observed live:
+// Teams can highlight more than one recent speaker at once (e.g. two
+// people who both just finished talking), and picking "the best-
+// scoring one" risked confidently attributing a naming hint to the
+// WRONG person. Skipping attribution for an ambiguous frame is safer
+// than guessing; the caller gets another chance on the next poll once
+// only one ring remains lit.
 //
 // Algorithm: color-threshold every pixel against cfg.TargetColor within
 // cfg.ColorTolerance, connected-components label the resulting mask
@@ -26,9 +35,9 @@ const hollownessFloor = 0.3
 // plausibly ring-shaped (its pixel count is well below its bounding
 // box's full area — a filled blob wouldn't be) and within
 // cfg.MinAreaFraction/MaxAreaFraction of the whole frame.
-func DetectRing(pix []byte, width, height int, cfg RingConfig) (*RingMatch, bool) {
+func DetectRing(pix []byte, width, height int, cfg RingConfig) (match *RingMatch, found bool, ambiguous bool) {
 	if !cfg.configured() || width <= 0 || height <= 0 || len(pix) < width*height*3 {
-		return nil, false
+		return nil, false, false
 	}
 
 	mask := make([]bool, width*height)
@@ -43,12 +52,11 @@ func DetectRing(pix []byte, width, height int, cfg RingConfig) (*RingMatch, bool
 
 	labels, numComponents := connectedComponents(mask, width, height)
 	if numComponents == 0 {
-		return nil, false
+		return nil, false, false
 	}
 
 	frameArea := float64(width * height)
-	var best *RingMatch
-	var bestScore float64
+	var candidates []RingMatch
 
 	for comp := 1; comp <= numComponents; comp++ {
 		minX, minY, maxX, maxY, count := boundingBox(labels, width, comp)
@@ -68,17 +76,17 @@ func DetectRing(pix []byte, width, height int, cfg RingConfig) (*RingMatch, bool
 			continue
 		}
 
-		score := hollowness * areaFrac
-		if best == nil || score > bestScore {
-			best = &RingMatch{X: minX, Y: minY, Width: bw, Height: bh, Confidence: hollowness}
-			bestScore = score
-		}
+		candidates = append(candidates, RingMatch{X: minX, Y: minY, Width: bw, Height: bh, Confidence: hollowness})
 	}
 
-	if best == nil {
-		return nil, false
+	switch len(candidates) {
+	case 0:
+		return nil, false, false
+	case 1:
+		return &candidates[0], true, false
+	default:
+		return nil, false, true
 	}
-	return best, true
 }
 
 // connectedComponents labels each true pixel in mask with its

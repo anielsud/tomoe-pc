@@ -46,7 +46,7 @@ func TestDetectRing_FindsHollowBorder(t *testing.T) {
 		MaxAreaFraction: 0.5,
 	}
 
-	match, ok := DetectRing(pix, width, height, cfg)
+	match, ok, _ := DetectRing(pix, width, height, cfg)
 	if !ok {
 		t.Fatal("DetectRing() found no match, want a match")
 	}
@@ -67,7 +67,7 @@ func TestDetectRing_FindsHollowBorder(t *testing.T) {
 func TestDetectRing_UnconfiguredReturnsNoMatch(t *testing.T) {
 	pix := make([]byte, 100*100*3)
 	var cfg RingConfig // zero value
-	match, ok := DetectRing(pix, 100, 100, cfg)
+	match, ok, _ := DetectRing(pix, 100, 100, cfg)
 	if ok || match != nil {
 		t.Errorf("DetectRing() with unconfigured RingConfig = (%v, %v), want (nil, false)", match, ok)
 	}
@@ -97,7 +97,7 @@ func TestDetectRing_RejectsSolidBlob(t *testing.T) {
 		MaxAreaFraction: 0.5,
 	}
 
-	if match, ok := DetectRing(pix, width, height, cfg); ok {
+	if match, ok, _ := DetectRing(pix, width, height, cfg); ok {
 		t.Errorf("DetectRing() matched a solid blob: %+v, want no match", match)
 	}
 }
@@ -117,8 +117,49 @@ func TestDetectRing_RejectsOutOfSizeRange(t *testing.T) {
 		MaxAreaFraction: 0.5,
 	}
 
-	if match, ok := DetectRing(pix, width, height, cfg); ok {
+	if match, ok, _ := DetectRing(pix, width, height, cfg); ok {
 		t.Errorf("DetectRing() matched an undersized ring: %+v, want no match (below MinAreaFraction)", match)
+	}
+}
+
+func TestDetectRing_AmbiguousWithTwoPlausibleRings(t *testing.T) {
+	const width, height = 200, 150
+	ringColor := [3]uint8{100, 50, 200}
+	bgColor := [3]uint8{20, 20, 20}
+
+	// Two separate, real speakers highlighted in the same frame --
+	// draw a second border directly onto the frame drawTestFrame
+	// already produced, rather than starting from a blank buffer
+	// (which would just erase the first ring).
+	pix := drawTestFrame(width, height, bgColor, 20, 20, 50, 40, 4, ringColor)
+	setPixel := func(px, py int) {
+		idx := (py*width + px) * 3
+		pix[idx], pix[idx+1], pix[idx+2] = ringColor[0], ringColor[1], ringColor[2]
+	}
+	for t := 0; t < 4; t++ {
+		for px := 120; px < 170; px++ {
+			setPixel(px, 90+t)
+			setPixel(px, 129-t)
+		}
+		for py := 90; py < 130; py++ {
+			setPixel(120+t, py)
+			setPixel(169-t, py)
+		}
+	}
+
+	cfg := RingConfig{
+		TargetColor:     ringColor,
+		ColorTolerance:  10,
+		MinAreaFraction: 0.001,
+		MaxAreaFraction: 0.5,
+	}
+
+	match, found, ambiguous := DetectRing(pix, width, height, cfg)
+	if !ambiguous {
+		t.Fatal("DetectRing() ambiguous = false, want true (two plausible rings in the same frame)")
+	}
+	if found || match != nil {
+		t.Errorf("DetectRing() = (%+v, %v) on an ambiguous frame, want (nil, false)", match, found)
 	}
 }
 
@@ -136,7 +177,7 @@ func TestDetectRing_NoMatchingColor(t *testing.T) {
 		MaxAreaFraction: 0.5,
 	}
 
-	if match, ok := DetectRing(pix, width, height, cfg); ok {
+	if match, ok, _ := DetectRing(pix, width, height, cfg); ok {
 		t.Errorf("DetectRing() matched with no ring-colored pixels present: %+v", match)
 	}
 }

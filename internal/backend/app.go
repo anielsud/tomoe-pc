@@ -453,7 +453,8 @@ func (a *App) StartSession(micDevice, monitorDevice, lang, platform string) erro
 	a.videoHintActivity = nil
 	a.videoHintMu.Unlock()
 	videoHintEvents := make(chan videohint.Event, 32)
-	go videohint.Poll(videoHintCtx, 10*time.Second, coordinator.HintNeeded(), videoHintEvents)
+	pollInterval, triggerDebounce := a.cfg.Meeting.VideoHintTiming()
+	go videohint.Poll(videoHintCtx, pollInterval, triggerDebounce, coordinator.HintNeeded(), videoHintEvents)
 	go a.emitVideoHintEvents(videoHintCtx, videoHintEvents)
 
 	// Start emitting segments to frontend

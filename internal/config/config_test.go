@@ -453,3 +453,26 @@ func TestWatch_MissingFileNeverFires(t *testing.T) {
 		t.Errorf("onChange fired %d times for a nonexistent file, want 0", got)
 	}
 }
+
+func TestMeetingConfig_VideoHintTiming(t *testing.T) {
+	m := MeetingConfig{VideoHintPollInterval: 5, VideoHintTriggerDebounce: 1}
+	interval, debounce := m.VideoHintTiming()
+	if interval != 5*time.Second {
+		t.Errorf("interval = %v, want 5s", interval)
+	}
+	if debounce != 1*time.Second {
+		t.Errorf("debounce = %v, want 1s", debounce)
+	}
+}
+
+func TestMeetingConfig_VideoHintTiming_FallsBackOnZero(t *testing.T) {
+	var m MeetingConfig // zero value
+	interval, debounce := m.VideoHintTiming()
+	def := DefaultConfig().Meeting
+	if want := time.Duration(def.VideoHintPollInterval * float64(time.Second)); interval != want {
+		t.Errorf("interval = %v, want default %v", interval, want)
+	}
+	if want := time.Duration(def.VideoHintTriggerDebounce * float64(time.Second)); debounce != want {
+		t.Errorf("debounce = %v, want default %v", debounce, want)
+	}
+}

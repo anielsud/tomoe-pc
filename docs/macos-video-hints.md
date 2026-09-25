@@ -45,11 +45,21 @@ Unit-tested against synthetic frames (`ring_test.go`).
 **Teams calibration** (from a real, live, multi-participant call,
 explicit authorization obtained first): active-speaker ring is
 RGB(129,136,243), a hollow rounded-square border. `ColorTolerance: 25`
-is deliberately generous to survive lighting/monitor variation. Two
-simultaneous rings were observed in one frame (Teams can highlight more
-than one recent speaker at once) — `DetectRing` only returns its single
-best-scoring match, so a second active ring in the same frame is
-currently missed.
+is deliberately generous to survive lighting/monitor variation.
+
+**Simultaneous rings, fixed.** Teams can highlight more than one
+recent speaker at once — observed live: two people both had a ring at
+the same moment, and the original "just return the single
+best-scoring match" behavior confidently attributed the hint to
+whichever one scored higher, silently mislabeling the other.
+`DetectRing` now returns three values (`match, found, ambiguous`):
+finding *more than one* plausible candidate sets `ambiguous` and
+returns no match at all, rather than guessing between them. The
+poller reports this as its own `StageAmbiguousRing` event (distinct
+from "no ring found") and still escalates the frame — a real "two
+people highlighted" moment is exactly the kind of case worth keeping
+in the snapshot library, even though nothing here is a rule gap to
+fix.
 
 ## Label geometry (`label.go`, `rule.go`'s `LabelRegion`)
 
@@ -103,6 +113,20 @@ found wiring this up:
    `CGDataProviderCreateWithData` (wraps the caller's pointer directly)
    to `CGDataProviderCreateWithCFData` over an immediately-copied
    `NSData`.
+
+**Noise stripping.** Observed live: a real name OCR'd as "Devin
+Dobrowolski Priv" — "Priv" (a truncated "Privacy") came from Teams'
+background-blur/privacy indicator overlapping the label crop, not from
+the name. `cleanOCRName` (`label.go`) strips a single trailing word
+from the OCR result if it matches (or is a partial-word prefix of) a
+small known-noise list (`privacy`, `muted`, `mute`, `recording`,
+`live`) — matched only as the *last* word, since a real name is never
+expected to end with one of these, and only ever strips one word, so
+a genuinely two-word name is never touched. This is a text-level
+patch, not a geometry recalibration — the actual overlay's on-screen
+position hasn't been measured, so if a *different* trailing artifact
+shows up it won't yet be caught; extend the list rather than assume
+this is exhaustive.
 
 ## Call-chrome gate (`chrome.go`)
 
@@ -182,26 +206,46 @@ retroactive.
 one person's continuous turn fragmenting into a fresh "Person N" per
 sentence — each single-sentence VAD segment produced a noisier
 embedding than a longer utterance, occasionally missing
-`speaker.Tracker`'s similarity threshold. Fixed with
-`stickyGraceWindow`/`stickyThresholdMargin` in
-`internal/speaker/cluster.go`: a near-miss similarity is still accepted
-as the same speaker if the best-matching centroid is also whoever was
-assigned moments ago — without folding the near-miss embedding into
-that centroid, so a run of noisy sentences can't drag a good centroid
-toward a bad one. `stickyThresholdMargin` (0.15) is a single
-hand-picked constant, not tuned against a real dataset, and could in
-principle merge a genuine quick speaker change if the new speaker's
-embedding happens to still score closest to whoever spoke immediately
-before them.
+`speaker.Tracker`'s similarity threshold. Fixed with a sticky-speaker
+heuristic in `internal/speaker` — see `speaker.Tuning`'s doc comment
+for the full mechanism, current thresholds, and the later real-call
+diagnostic session that retuned `DefaultThreshold` itself (0.65 → 0.55)
+from real similarity scores rather than a guess. Every one of these
+constants is now hot-reloadable from `config.toml` (`MeetingConfig`,
+`config.Watch`) — no rebuild or relaunch needed to retune it again.
+
+**Cluster merging on a matching video hint.** A video hint is
+independent evidence of identity, separate from audio similarity —
+if it resolves *two different* "Person N" clusters to the same real
+name, that's a strong signal they're actually one person whose
+embeddings simply never clustered together (exactly the kind of
+mistake real-call diagnostics found the audio side making).
+`SetHintForRecent` now merges in that case (`speaker.Tracker.mergeInto`):
+folds the newer cluster's centroid into the existing one's running
+average and aliases it, so every future match against either resolves
+to the same identity — without ever renumbering an unrelated
+"Person N" (see `Tracker.canonical`). Gated by `sameIdentity`, stricter
+than the truncation check used elsewhere: requires an exact match, or
+a truncation relationship with the shorter name at least 4 characters,
+so a bare ambiguous fragment (a first initial, "Mr") can never trigger
+a merge.
 
 ## Polling (`poller_darwin.go`)
 
 Runs on a fixed ticker *and* an immediate trigger:
 `live.Coordinator.HintNeeded()` signals the moment a monitor-source
 speaker with no hint yet is heard (`speaker.Tracker.Assign`'s
-`needsHint` return value), debounced separately from the ticker
-(`minAttemptInterval`, currently 1s) so a still-talking unlabeled
-speaker can't hammer ScreenCaptureKit + Vision faster than that.
+`needsHint` return value), debounced separately from the ticker (now a
+`Poll` parameter, `triggerDebounce`, default 1s) so a still-talking
+unlabeled speaker can't hammer ScreenCaptureKit + Vision faster than
+that. Both the ticker interval (default 5s, down from an original 10s)
+and the debounce come from `config.toml`
+(`MeetingConfig.VideoHintPollInterval`/`VideoHintTriggerDebounce`),
+read fresh each time a meeting session starts — unlike
+`speaker.Tracker`'s tuning, these aren't hot-reloaded *mid-session*
+(the ticker's already running by the time a session starts), but still
+need no rebuild or relaunch: a new session picks up an edited config
+immediately.
 
 Every stage reached each tick is reported on an `events` channel
 (window found/not, frame captured, not-a-call, ring matched/not, OCR
@@ -218,16 +262,23 @@ ticker.
   Zoom/Slack; browser owner-name + title match for Meet/Webex, reusing
   `internal/meeting/platform.go`'s existing pattern) before video hints
   produce anything for them.
-- **Simultaneous rings.** `DetectRing` returns only its single
-  best-scoring match; a frame with two people highlighted at once
-  currently only produces a hint for one.
 - **Orphaned hints.** A hint with no recent-enough speaker to attach to
   (`SetHintForRecent` returns `false`) is logged but otherwise silently
   dropped, not retried.
-- **`stickyThresholdMargin` is untuned** against a real dataset (see
-  above).
 - **Truncated names.** Teams' active-speaker tile often truncates the
   name (e.g. "Nazanin Rame…") — a fine hint, not necessarily the
-  participant's actual full name. Needs a second signal: reading the
-  roster/participants panel (a different, richer piece of Teams' UI) or
-  an org-directory lookup once a partial name is known.
+  participant's actual full name. Investigated: macOS's own local data
+  sources (Outlook's mail/calendar cache, macOS Contacts, macOS
+  Calendar) were all empty/proprietary dead ends on the one real
+  machine checked; Teams' own local IndexedDB cache has a real but
+  narrow mri→displayName mapping (from the @-mention feature — only
+  ~18% coverage against real meeting participants in one measured
+  session) not accepted as a real solve. Remaining candidates: reading
+  the roster/participants panel (opportunistic OCR, needs live
+  calibration), or Microsoft Graph API (`/me/people`) — genuine
+  complete coverage, but a fundamentally bigger feature (network +
+  OAuth, not a passive local read).
+- **Ambiguous-ring escalations still need a human look.** Nothing
+  automatically distinguishes "two people genuinely both just spoke"
+  from a false-positive second ring (e.g. noise coincidentally passing
+  the color/shape filters) — both currently escalate the same way.
