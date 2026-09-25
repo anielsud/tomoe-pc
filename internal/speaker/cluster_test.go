@@ -403,6 +403,55 @@ func TestTrackerShortSegment_DoesNotPolluteCentroid(t *testing.T) {
 	}
 }
 
+func TestTrackerShortSegment_PrefersABetterMatchingOtherSpeaker(t *testing.T) {
+	tracker := NewTracker(0.8)
+	clock := &fakeClock{t: time.Now()}
+	tracker.nowFn = clock.now
+
+	// Two already-distinguished speakers, established with confident
+	// matches so each has a real centroid of their own.
+	tracker.Assign([]float32{1, 0, 0, 0}, 2*time.Second) // Person 1 ("Kevin")
+	tracker.Assign([]float32{1, 0, 0, 0}, 2*time.Second) // reinforce Person 1's centroid
+	clock.advance(time.Second)
+	tracker.Assign([]float32{0, 0, 1, 0}, 2*time.Second) // Person 2 ("Shaf")
+	tracker.Assign([]float32{0, 0, 1, 0}, 2*time.Second) // reinforce Person 2's centroid
+
+	// Kevin speaks again, briefly, immediately followed by an
+	// even briefer reply from Shaf -- a real quick back-and-forth.
+	// Without the fix, Shaf's short reply would default to "whoever
+	// spoke last" (Kevin) purely because it's short and recent, even
+	// though it's clearly a much better match for Shaf's own centroid.
+	clock.advance(time.Second)
+	tracker.Assign([]float32{0.99, 0, 0.01, 0}, 2*time.Second) // Kevin again (long enough)
+
+	clock.advance(time.Second)
+	label, _ := tracker.Assign([]float32{0, 0, 0.99, 0.01}, 300*time.Millisecond) // Shaf's brief reply
+	if label != "Person 2" {
+		t.Errorf("short reply label = %q, want %q (Shaf's own centroid, not blindly Kevin's)", label, "Person 2")
+	}
+}
+
+func TestTrackerShortSegment_StillDefaultsToLastSpeakerWithoutABetterMatch(t *testing.T) {
+	tracker := NewTracker(0.8)
+	clock := &fakeClock{t: time.Now()}
+	tracker.nowFn = clock.now
+
+	tracker.Assign([]float32{1, 0, 0, 0}, 2*time.Second) // Person 1
+
+	// A short, noisy segment with no strong match anywhere -- the
+	// original "default to last speaker" behavior must still apply;
+	// the fix only redirects when some OTHER cluster is clearly the
+	// better match, not whenever bestIdx happens to differ at all.
+	clock.advance(time.Second)
+	label, _ := tracker.Assign([]float32{0, 1, 0, 0}, 300*time.Millisecond)
+	if label != "Person 1" {
+		t.Errorf("label = %q, want %q (no better match exists, keep the default)", label, "Person 1")
+	}
+	if tracker.NumSpeakers() != 1 {
+		t.Errorf("NumSpeakers() = %d, want 1", tracker.NumSpeakers())
+	}
+}
+
 func TestTrackerShortSegment_AtMinDurationBehavesAsNormal(t *testing.T) {
 	tracker := NewTracker(0.8)
 	clock := &fakeClock{t: time.Now()}

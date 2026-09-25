@@ -253,6 +253,22 @@ func (t *Tracker) Assign(embedding []float32, duration time.Duration) (label str
 		// IS refreshed, so a run of short interjections keeps renewing
 		// its own grace window instead of expiring mid-run.
 		idx := t.lastAssignedIdx
+		// EXCEPT: if this short segment is actually a much better
+		// match against a DIFFERENT already-known speaker, prefer
+		// that. Found live: in a real multi-participant call, a quick
+		// back-and-forth between two already-distinguished speakers
+		// (short replies close together in time) kept relabeling the
+		// second speaker's own lines as the first speaker's, purely
+		// because "short and recent" always won regardless of which
+		// existing centroid the audio actually matched best --
+		// visibly wrong (one real person's name spreading onto
+		// another's lines), not just an unlabeled-cluster question.
+		// Reuses the sticky check's own relaxed floor as "good enough
+		// to trust over blind recency."
+		if bestIdx >= 0 && bestIdx != idx && bestSim >= t.tuning.Threshold-t.tuning.StickyThresholdMargin {
+			idx = bestIdx
+		}
+		t.lastAssignedIdx = idx
 		t.lastAssignedAt = now
 		debugLogAssign("short-segment", idx, bestSim, duration, sinceLast, t.tuning.Threshold)
 		return t.label(idx), t.hints[idx] == ""
